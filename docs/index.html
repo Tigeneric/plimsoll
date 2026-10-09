@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>plimsoll — a status line for Claude Code</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A status line for Claude Code: icons that drain as your usage limits are spent. Every part of the line, called out on a real screenshot.">
+<meta property="og:title" content="plimsoll — a status line for Claude Code">
+<meta property="og:description" content="Icons that drain as your usage limits are spent. Every part of the line, called out on a real screenshot.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tigeneric.github.io/plimsoll/">
+<meta property="og:image" content="https://tigeneric.github.io/plimsoll/screenshots/statusline.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one annotated strip (the real screenshot, leaders drawn to it), then a key that answers "what is this part". */
+:root {
+  --bg: #eef1f4;          /* hull-grey paper */
+  --fg: #1c2530;
+  --muted: #5d6b7a;
+  --rule: #cfd6de;
+  --panel: #ffffff;
+  --accent: #c8372d;      /* load-line red */
+  --accent-soft: rgba(200, 55, 45, .12);
+  --term: #2f343f;        /* the terminal's own ground, same in both themes */
+  --term-line: #8a96a8;
+  --term-text: #dfe4ea;
+  --display: "Big Shoulders Display", "Arial Narrow", sans-serif;
+  --body: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #151a21; --fg: #e3e8ee; --muted: #93a0ae; --rule: #2a323d; --panel: #1c232c;
+    --accent: #ef6a5c; --accent-soft: rgba(239, 106, 92, .16); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #151a21; --fg: #e3e8ee; --muted: #93a0ae; --rule: #2a323d; --panel: #1c232c;
+  --accent: #ef6a5c; --accent-soft: rgba(239, 106, 92, .16); color-scheme: dark;
+}
+
+body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--body); }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: grid; gap: 32px; }
+
+header { display: grid; gap: 10px; max-width: 68ch; }
+.eyebrow { font: 600 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+h1 { font: 800 clamp(40px, 7vw, 68px)/.95 var(--display); letter-spacing: .01em; margin: 0; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); }
+header code, .key code { font-family: var(--mono); font-size: .9em; }
+
+.figure { background: var(--term); border-radius: 10px; overflow-x: auto; }
+.canvas { position: relative; min-width: 900px; }
+.canvas svg { position: relative; display: block; width: 100%; height: auto; }
+/* The screenshot sits under the drawing: 170/400 of its height down, as wide as it. */
+.canvas img { position: absolute; left: 0; top: 42.5%; width: 100%; height: auto; max-width: none; }
+.hint { font: 400 12px/1.4 var(--mono); color: var(--muted); margin: -20px 0 0; }
+
+.seg { cursor: pointer; outline: none; }
+.seg .box { fill: transparent; stroke: transparent; stroke-width: 3; rx: 6; }
+.seg .lead { stroke: var(--term-line); stroke-width: 2; }
+.seg .dot { fill: var(--term-line); }
+.seg .num { font: 600 22px var(--mono); fill: var(--term); }
+.seg .badge { fill: var(--term-line); }
+.seg .lbl { font: 400 23px var(--mono); fill: var(--term-text); }
+.seg:hover .box, .seg:focus-visible .box, .seg.on .box { stroke: var(--accent); fill: rgba(239, 106, 92, .14); }
+.seg:hover .lead, .seg:focus-visible .lead, .seg.on .lead,
+.seg:hover .dot, .seg:focus-visible .dot, .seg.on .dot, .seg.on .badge, .seg:hover .badge, .seg:focus-visible .badge { stroke: #ef6a5c; fill: #ef6a5c; }
+.seg.on .lbl, .seg:hover .lbl { fill: #ffffff; }
+.foreign .lbl { fill: var(--term-line); font-style: italic; }
+
+.key { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 0 32px; margin: 0; padding: 0; list-style: none; }
+.key li { display: grid; grid-template-columns: 28px 1fr; gap: 4px 12px; padding: 14px 10px; border-top: 1px solid var(--rule); border-radius: 4px; cursor: pointer; }
+.key li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.key li.on { background: var(--accent-soft); }
+.key .n { font: 600 13px/1.9 var(--mono); color: var(--accent); font-variant-numeric: tabular-nums; }
+.key h3 { margin: 0; font: 600 15px/1.4 var(--body); }
+.key p { grid-column: 2; margin: 0; color: var(--muted); font-size: 14px; }
+.key .seen { grid-column: 2; font: 400 12px/1.5 var(--mono); color: var(--fg); }
+
+section h2 { font: 600 24px/1 var(--display); letter-spacing: .04em; text-transform: uppercase; margin: 0 0 12px; }
+.notes { max-width: 68ch; color: var(--muted); display: grid; gap: 8px; }
+.notes p { margin: 0; }
+
+.top { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
+.top a, footer a { color: var(--fg); }
+.install { font: 400 13px/1.5 var(--mono); background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre; margin: 0; }
+footer { border-top: 1px solid var(--rule); padding-top: 16px; color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+@media (prefers-reduced-motion: no-preference) {
+  .seg .box, .seg .lead, .key li { transition: all .15s ease; }
+}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header>
+    <div class="top">
+      <span class="eyebrow">plimsoll · status line for Claude Code</span>
+      <a href="https://github.com/Tigeneric/plimsoll">Source and install on GitHub →</a>
+    </div>
+    <h1>What each part of the line tells you</h1>
+    <p>A real status line from a working session, part by part. Point at any part of the strip, or at a row in the key below, to see what it measures and when it changes colour.</p>
+    <pre class="install">git clone https://github.com/Tigeneric/plimsoll.git &amp;&amp; plimsoll/install.sh</pre>
+  </header>
+
+  <div class="figure" role="img" aria-label="The status line with numbered callouts">
+    <div class="canvas">
+      <img src="screenshots/statusline.png" alt="" width="1960" height="84">
+      <svg id="strip" viewBox="0 0 1960 400" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </div>
+  <p class="hint">Narrow screen? The strip scrolls sideways.</p>
+
+  <section>
+    <h2>Key</h2>
+    <ul class="key" id="key"></ul>
+  </section>
+
+  <section class="notes">
+    <h2>How the icons work</h2>
+    <p>The model and Codex marks are glyphs of a small font built on your machine and placed at private-use code points U+E900–U+E9A9. Each mark exists at 26 fill levels; the status line picks the one for what is left of the weekly limit, so the tile drains from the top as the week is spent.</p>
+    <p>Where the terminal cannot draw that font, the line prints the names instead (<code>Opus 5.5 med</code>, <code>Codex 8%</code>), and the weekly levels are not shown.</p>
+  </section>
+  <footer>
+    <span>MIT licence for the code.</span>
+    <span>Not affiliated with Anthropic or OpenAI; the icons are drawn on your machine from their pictures.</span>
+    <a href="https://github.com/Tigeneric/plimsoll">github.com/Tigeneric/plimsoll</a>
+  </footer>
+</div>
+
+<script>
+// x0..x1 measured on the 1960 px screenshot; tier 0 sits nearer the strip.
+const SEGS = [
+  { x0: 36,   x1: 51,   tier: 0, label: "session",  title: "Session dot",
+    seen: "●  (violet)",
+    body: "A colour chosen from the session id, so two sessions in the same project look different at a glance. It stays the same for the life of the session." },
+  { x0: 70,   x1: 338,  tier: 1, label: "path",     title: "Working directory",
+    seen: "~/projects/ritual",
+    body: "Where the session is working, with your home folder shortened to ~." },
+  { x0: 357,  x1: 449,  tier: 0, label: "branch",   title: "Git branch",
+    seen: "⎇ main",
+    body: "The current branch. Read without taking git's index lock, so it never gets in the way of a git command you are running." },
+  { x0: 470,  x1: 593,  tier: 1, label: "diff",     title: "Uncommitted changes",
+    seen: "+224/-73",
+    body: "Lines added and removed since the last commit, across the working tree. Hidden when there is nothing uncommitted." },
+  { x0: 837,  x1: 993,  tier: 0, label: "model",    title: "Model, effort, weekly limit",
+    seen: "▣ 5.5 med",
+    body: "The model family as its icon, then the version and effort level (⚡ in fast mode). The tile is filled to what is left of the weekly limit. Clicking it opens the usage page." },
+  { x0: 1046, x1: 1235, tier: 1, label: "context",  title: "Context window",
+    seen: "ctx ▰▰▱▱▱▱▱▱",
+    body: "How full the conversation's context is, in 8 cells of 12.5% each. A cell lights as soon as any of it is used. Green, yellow from 50%, red from 80%." },
+  { x0: 1286, x1: 1506, tier: 0, label: "5-hour",   title: "Five-hour limit",
+    seen: "2h30m ▰▰▰▱▱▱▱▱",
+    body: "Time until the window resets, then how much of it is used. The countdown rounds down: whole hours above 3h, then 30, 15, 5 and 1 minute steps. Yellow from 70%, red from 90%; once only the last cell remains, the share left follows it as a number." },
+  { x0: 1557, x1: 1635, tier: 1, label: "Codex",    title: "Codex limits",
+    seen: "☁ 8%",
+    body: "Shown when Codex works alongside. The mark is filled to Codex's weekly limit left; the number is its five-hour window used. Read from Codex's own session logs, dimmed when the reading is over an hour old." },
+  { x0: 1684, x1: 1761, tier: 0, label: "disk",     title: "Free disk space",
+    seen: "38G",
+    body: "Free space on the startup volume. Yellow under 25 GB, red under 10 GB." },
+  { x0: 1812, x1: 1891, tier: 1, label: "CPU",      title: "CPU load",
+    seen: "44%",
+    body: "Average load across all cores." },
+];
+const FOREIGN = { x0: 38, x1: 606, label: "Claude Code's own row: permission mode, not part of the status line" };
+
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("strip");
+const key = document.getElementById("key");
+const IMG_Y = 170, LINE_TOP = IMG_Y + 2, LINE_BOT = IMG_Y + 52;
+const TIER_Y = [118, 52];   // label baselines
+const mk = (tag, attrs, parent) => {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  parent && parent.appendChild(el);
+  return el;
+};
+
+
+const groups = [], rows = [];
+function select(i) {
+  groups.forEach((g, j) => g.classList.toggle("on", j === i));
+  rows.forEach((r, j) => r.classList.toggle("on", j === i));
+}
+
+SEGS.forEach((s, i) => {
+  const cx = (s.x0 + s.x1) / 2, ly = TIER_Y[s.tier];
+  const g = mk("g", { class: "seg", tabindex: 0, role: "button", "aria-label": `${i + 1}. ${s.title}` }, svg);
+  mk("rect", { class: "box", x: s.x0 - 8, y: LINE_TOP - 4, width: s.x1 - s.x0 + 16, height: LINE_BOT - LINE_TOP + 8 }, g);
+  mk("line", { class: "lead", x1: cx, y1: ly + 14, x2: cx, y2: LINE_TOP - 6 }, g);
+  mk("circle", { class: "dot", cx, cy: LINE_TOP - 6, r: 4 }, g);
+  // badge + label, kept inside the drawing at both edges
+  const text = mk("text", { class: "lbl", y: ly }, g);
+  text.textContent = s.label;
+  const w = s.label.length * 14 + 46;
+  let left = cx - w / 2;
+  left = Math.max(12, Math.min(1960 - w - 12, left));
+  mk("rect", { class: "badge", x: left, y: ly - 22, width: 30, height: 30, rx: 15 }, g);
+  const num = mk("text", { class: "num", x: left + 15, y: ly + 1, "text-anchor": "middle" }, g);
+  num.textContent = i + 1;
+  text.setAttribute("x", left + 40);
+  g.addEventListener("click", () => select(i));
+  g.addEventListener("mouseenter", () => select(i));
+  g.addEventListener("focus", () => select(i));
+  groups.push(g);
+
+  const li = document.createElement("li");
+  li.tabIndex = 0;
+  li.innerHTML = `<span class="n">${String(i + 1).padStart(2, "0")}</span><h3></h3><span class="seen"></span><p></p>`;
+  li.querySelector("h3").textContent = s.title;
+  li.querySelector(".seen").textContent = s.seen;
+  li.querySelector("p").textContent = s.body;
+  li.addEventListener("click", () => select(i));
+  li.addEventListener("mouseenter", () => select(i));
+  li.addEventListener("focus", () => select(i));
+  key.appendChild(li);
+  rows.push(li);
+});
+
+// The second row of the screenshot is Claude Code's, marked as such.
+const f = mk("g", { class: "seg foreign" }, svg);
+mk("line", { class: "lead", x1: 120, y1: IMG_Y + 84, x2: 120, y2: 340 }, f);
+mk("text", { class: "lbl", x: 132, y: 352 }, f).textContent = FOREIGN.label;
+
+select(4);
+</script>
+</body>
+</html>

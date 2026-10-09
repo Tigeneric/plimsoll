@@ -1,0 +1,29 @@
+name: CI
+
+# The status line reads macOS's stat and sysctl, so the tests run on a macOS
+# runner. Documentation-only pushes skip the run, and a superseded run is
+# cancelled rather than left to finish.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'docs/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - 'docs/**'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tests
+        run: make test
