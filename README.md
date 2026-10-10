@@ -106,6 +106,9 @@ background tool that polls the official CLIs while the terminal is idle (`claude
 `codex app-server`) can keep the file fresh, and every tab then draws its numbers. Antigravity
 and other services do not belong in this file; its format covers Claude and Codex only.
 
+Which source to read limits from — local reports, the tools' CLIs, their internal API or the
+website — and why plimsoll reads only the local ones: [docs/LIMIT_SOURCES.md](docs/LIMIT_SOURCES.md).
+
 ## Configuring
 
 The icons are glyphs at private-use code points U+E900–U+E9A9, and the terminal has to draw
