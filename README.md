@@ -57,6 +57,55 @@ none is set (an existing one is left alone), builds and installs the font, and p
 terminal configuration line when it is missing. Running it again is safe; it is also how an
 update is applied after `git pull`.
 
+## The shared limits file
+
+Each Claude Code session gets its rate limits from the response headers of its own last API
+call, so an idle tab shows an old reading while the busy ones show newer ones. Every session
+therefore merges what it knows into one file, `${XDG_CACHE_HOME:-~/.cache}/plimsoll/limits.json`,
+and draws from the merge: Claude's two windows from the session's input, Codex's two from its
+newest session log.
+
+A session started with a `CLAUDE_CONFIG_DIR` other than `~/.claude` belongs to another account,
+with limits of its own, so it keeps its own file: the directory's path with `/` and `.` turned
+into `-` names a subdirectory, and `~/.claude-work` reads and writes
+`plimsoll/-Users-you--claude-work/limits.json`. Without the split the higher percentage of the
+two accounts would be drawn in both.
+
+```json
+{"version":1,
+ "claude":{"five_hour":{"used_percentage":42,"resets_at":1791657702,"changed_at":1791650000},
+           "seven_day":{"used_percentage":18,"resets_at":1792049602,"changed_at":1791640000}},
+ "codex":{"primary":{"used_percent":8.0,"resets_at":1791908796,"changed_at":1791908000},
+          "secondary":{"used_percent":24.0,"resets_at":1791908796,"changed_at":1791640000}}}
+```
+
+Each source keeps its own field names; percentages are 0 to 100, times are epoch seconds. A
+window is left out when nobody has reported it. The merge is per window and needs no clock: a
+reading whose `resets_at` is more than 120 seconds later than the stored one belongs to a newer
+window and replaces it; otherwise it is the same window and the higher percentage wins, since
+usage within a window only grows. (Codex's logs show the reset time jittering by up to about 50
+seconds between responses, and the next gap is 780 seconds.) A window whose reset has passed is
+drawn as empty.
+
+`changed_at` is when the stored value of that window last changed. It is not "last confirmed":
+a stale tab replaying an equal value cannot be told from a fresh confirmation. It also looks
+stale for a steady value, so a reader such as a widget should not present it as "last updated".
+Codex's mark is dimmed when its five-hour reading has neither changed nor been confirmed by a
+new turn in Codex's log for over an hour.
+
+The file is written only when the merge differs from it, to a temporary file that is then
+renamed over it, so a reader never sees half a file. There is no lock: two sessions writing at
+once can lose one update, and the next render of either brings it back. A missing, empty,
+corrupt or other-version file is treated as empty and overwritten. Other programs may read it;
+they should check `version`.
+
+Other programs may also write it, as long as they follow the same merge rule, write the same
+version and field names, and replace the file by rename. plimsoll itself never calls a CLI or
+the network to refresh it: it only merges what Claude Code and Codex already report. A
+background tool that polls the official CLIs while the terminal is idle (`claude -p /usage`,
+`codex app-server`) can keep the file fresh, and every tab then draws its numbers. Antigravity
+and other services do not belong in this file; its format covers Claude and Codex only.
+
 ## Configuring
 
 The icons are glyphs at private-use code points U+E900–U+E9A9, and the terminal has to draw

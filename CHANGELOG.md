@@ -3,6 +3,23 @@
 Versions follow [semantic versioning](https://semver.org). The version lives in
 one place, the git tag; a release is a section here plus `git tag vX.Y.Z`.
 
+## Unreleased
+
+### Added
+
+- A shared limits file, `${XDG_CACHE_HOME:-~/.cache}/plimsoll/limits.json`: every
+  session merges its Claude and Codex readings into it and draws from the
+  result, so an idle tab no longer shows a reading older than another tab's.
+  Per window, a reading with a later reset belongs to a newer window and wins;
+  within the same window the higher percentage does. A `CLAUDE_CONFIG_DIR` other
+  than `~/.claude` is another account and keeps a file of its own, in a
+  subdirectory named after its path. The format is described in the README.
+
+### Changed
+
+- The Codex mark is dimmed when its reading has neither changed in the shared
+  file nor been confirmed by a write to Codex's log for over an hour.
+
 ## 0.1.0 — 2026-10-09
 
 The first release as a project of its own. The status line grew inside a

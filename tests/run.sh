@@ -28,15 +28,20 @@ input() {  # $1 context %, $2 five-hour %, $3 seconds to its reset, $4 weekly %
 
 strip() { perl -CS -pe 's/\e\[[0-9;]*m//g; s/\e\]8;;[^\a]*\a//g; s/([\x{E900}-\x{E9FF}])/sprintf("<U+%04X>",ord $1)/ge'; }
 
+# Each render gets a fresh, empty cache unless the caller names one with
+# XDG_CACHE_HOME=...: the shared limits file would otherwise carry one fixture's
+# readings into the next.
 render() {  # input on stdin, env assignments as arguments; a nonzero exit is recorded
   local out status
-  out=$(env -i PATH="$PATH" HOME="$home" COLUMNS=0 "$@" /bin/bash "$script"); status=$?
+  rm -rf "$home/cache-default"
+  out=$(env -i PATH="$PATH" HOME="$home" XDG_CACHE_HOME="$home/cache-default" COLUMNS=0 "$@" /bin/bash "$script"); status=$?
   (( status == 0 )) || echo "exit $status" >> "$home/render-failures"
   printf '%s\n' "$out" | strip
 }
 
 status_of() {  # the status line's own exit status, not the pipeline's
-  env -i PATH="$PATH" HOME="$home" COLUMNS=0 "$@" /bin/bash "$script" >/dev/null 2>&1
+  rm -rf "$home/cache-default"
+  env -i PATH="$PATH" HOME="$home" XDG_CACHE_HOME="$home/cache-default" COLUMNS=0 "$@" /bin/bash "$script" >/dev/null 2>&1
   echo $?
 }
 
@@ -138,6 +143,153 @@ check "sha256 repository, no commit yet: staged lines counted" "+2/-0" "$(render
 git init -q "$home/ctl?dir"
 ctl_dir=$(printf '{"workspace":{"current_dir":"%s/ctl\\u0001dir"},"model":{"display_name":"Opus 5.5"}}' "$home")
 check_absent "a control character in the path does not reach git" "⎇" "$(render <<<"$ctl_dir")"
+
+# The shared limits file: every session merges its reading into it and renders
+# from the result. Each case names its own cache, so one property is read per
+# case. Stored readings are written by hand here, the way an earlier render of
+# another session would have left them.
+clock=$(date +%s)
+R=$(( clock + 8100 ))     # a five-hour reset, 2h15m away
+W=18000                   # a five-hour window; a newer one resets at least this much later
+cache_n=0
+new_cache() { cache_n=$(( cache_n + 1 )); cache="$home/cache-$cache_n"; limits="$cache/plimsoll/limits.json"; mkdir -p "$cache/plimsoll"; }
+stored_five() {  # used %, resets_at, changed_at (default: just now); the weekly window is left empty
+  printf '{"version":1,"claude":{"five_hour":{"used_percentage":%s,"resets_at":%s,"changed_at":%s}}}' "$1" "$2" "${3:-$clock}"
+}
+stdin_five() {  # used %, resets_at
+  printf '{"session_id":"t","model":{"display_name":"Opus 5.5"},"rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":%s}}}' "$1" "$2"
+}
+five_in_file() { jq -c '[.claude.five_hour.used_percentage, .claude.five_hour.resets_at]' "$limits" 2>&1; }
+render_raw() { rm -rf "$home/cache-default"; env -i PATH="$PATH" HOME="$home" XDG_CACHE_HOME="${cache:-$home/cache-default}" COLUMNS=0 "$@" /bin/bash "$script" | perl -pe 's/\e\]8;;[^\a]*\a//g'; }   # colour kept, links cut
+stderr_of() { env -i PATH="$PATH" HOME="$home" XDG_CACHE_HOME="$cache" COLUMNS=0 /bin/bash "$script" 2>&1 >/dev/null; }
+
+new_cache; stored_five 60 "$R" > "$limits"
+check "stale tab: the shared, higher five-hour reading is drawn" "▰▰▰▰▰▱▱▱" \
+  "$(render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$(( R + 1 ))")")"
+
+new_cache; stored_five 90 "$R" > "$limits"
+check "new window: its lower reading is drawn" "▰▱▱▱▱▱▱▱ ·" \
+  "$(render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 10 "$(( R + W ))")")"
+new_cache; stored_five 90 "$R" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 10 "$(( R + W ))")" >/dev/null
+check_eq "new window replaces an older window's higher reading" "[10,$(( R + W ))]" "$(five_in_file)"
+
+new_cache; stored_five 10 "$(( R + W ))" > "$limits"
+check "old window: the newer window's reading is drawn" "▰▱▱▱▱▱▱▱ ·" \
+  "$(render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 90 "$R")")"
+new_cache; stored_five 10 "$(( R + W ))" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 90 "$R")" >/dev/null
+check_eq "an older window does not overwrite a newer one" "[10,$(( R + W ))]" "$(five_in_file)"
+
+# Jitter between responses of one window was measured at up to 48 s in Codex's
+# logs (the next gap is 780 s); the tolerance is 120 s.
+new_cache; stored_five 60 "$R" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 30 "$(( R + 100 ))")" >/dev/null
+check_eq "a reset 100 s later is the same window: the lower reading loses" "[60,$R]" "$(five_in_file)"
+new_cache; stored_five 60 "$R" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 30 "$(( R + 200 ))")" >/dev/null
+check_eq "a reset 200 s later is a new window: it replaces" "[30,$(( R + 200 ))]" "$(five_in_file)"
+new_cache; stored_five 30 "$(( R + 100 ))" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 60 "$R")" >/dev/null
+check_eq "a reset 100 s earlier is the same window: the higher reading wins" "[60,$R]" "$(five_in_file)"
+
+new_cache; printf '{"version":1,"claude":{"seven_day":{"used_percentage":70,"resets_at":%s,"changed_at":%s}}}' "$(( clock + 400000 ))" "$clock" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(input 12 10 8100 40)" >/dev/null
+check_eq "seven_day merges on its own: the higher reading is kept" "[70,$(( clock + 400000 ))]" \
+  "$(jq -c '[.claude.seven_day.used_percentage, .claude.seven_day.resets_at]' "$limits" 2>&1)"
+check_eq "five_hour merges on its own beside it" "10" "$(jq -c '.claude.five_hour.used_percentage' "$limits" 2>&1)"
+new_cache; render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 125 "$R")" >/dev/null
+check_eq "an out-of-range reading is stored held to 100" "100" "$(jq -c '.claude.five_hour.used_percentage' "$limits" 2>&1)"
+# The set of windows is written in the script; each needs its own cases above.
+new_cache; render XDG_CACHE_HOME="$cache" <<<"$(input 12 10 8100 40)" >/dev/null
+check_eq "the file holds version 1 and exactly these windows" \
+  "1 claude.five_hour claude.seven_day codex.primary codex.secondary" \
+  "$(jq -r '"\(.version) " + ([paths(type == "object" and has("changed_at")) | join(".")] | join(" "))' "$limits" 2>&1)"
+
+# A file that cannot be used never breaks the line, and is repaired.
+break_file() {  # kind
+  case $1 in
+    corrupt) printf '{"version":1,"claude":{"five_ho' > "$limits" ;;
+    empty) : > "$limits" ;;
+    version2) printf '{"version":2,"claude":{"five_hour":{"used_percentage":99,"resets_at":%s}}}' "$R" > "$limits" ;;
+    binary) printf '\000\001\377{' > "$limits" ;;
+  esac
+}
+for kind in corrupt empty version2 binary; do
+  new_cache
+  break_file $kind; err=$(stderr_of <<<"$(stdin_five 40 "$R")")
+  check_eq "$kind file: nothing on stderr" "none" "${err:-none}"
+  break_file $kind
+  check_eq "$kind file: exits 0" "0" "$(status_of XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")")"
+  break_file $kind
+  check "$kind file: the stdin reading is drawn" "▰▰▰▰▱▱▱▱" "$(render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")")"
+  check_eq "$kind file: repaired" "[40,$R]" "$(five_in_file)"
+done
+# Each Claude config directory is its own account with its own limits: one
+# other than ~/.claude keeps its file in a subdirectory named after its path,
+# with / and . turned into -.
+new_cache; stored_five 90 "$R" > "$limits"
+check "another config dir does not draw the default file's reading" "▰▱▱▱▱▱▱▱ ·" \
+  "$(render XDG_CACHE_HOME="$cache" CLAUDE_CONFIG_DIR="$home/work.d" <<<"$(stdin_five 10 "$R")")"
+new_cache; rm -f "$limits"
+render XDG_CACHE_HOME="$cache" CLAUDE_CONFIG_DIR="$home/work.d" <<<"$(stdin_five 40 "$R")" >/dev/null
+check_eq "another config dir leaves the default file alone" "absent" "$([[ -e "$limits" ]] && echo present || echo absent)"
+check_eq "another config dir writes its own file" "[40,$R]" \
+  "$(jq -c '[.claude.five_hour.used_percentage, .claude.five_hour.resets_at]' "$cache/plimsoll/${home//[\/.]/-}-work-d/limits.json" 2>&1)"
+new_cache
+render XDG_CACHE_HOME="$cache" CLAUDE_CONFIG_DIR="$home/.claude/" <<<"$(stdin_five 40 "$R")" >/dev/null
+check_eq "CLAUDE_CONFIG_DIR=~/.claude/ uses the default file" "[40,$R]" "$(five_in_file)"
+check_eq "a limits path that is a directory does not break the line" "0" \
+  "$(mkdir -p "$home/cache-dir/plimsoll/limits.json"; status_of XDG_CACHE_HOME="$home/cache-dir" <<<"$(stdin_five 40 "$R")")"
+
+# Nothing changed, nothing written: the inode and the mtime are read after the
+# second render, while the first render's file is still the one on disk.
+new_cache; stored_five 60 "$R" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")" >/dev/null     # first render normalises the file
+touch -t 200101010000 "$limits"; before=$(stat -f '%i %m' "$limits" 2>&1)
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")" >/dev/null
+check_eq "an unchanged merge does not rewrite the file" "$before" "$(stat -f '%i %m' "$limits" 2>&1)"
+new_cache; stored_five 60 "$R" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")" >/dev/null
+touch -t 200101010000 "$limits"; before=$(stat -f '%i %m' "$limits" 2>&1)
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 70 "$R")" >/dev/null
+check_absent "a higher reading does rewrite it" "$before" "$(stat -f '%i %m' "$limits" 2>&1)"
+check_eq "the cache directory is created when missing" "yes" \
+  "$(rm -rf "$home/fresh-cache"; render XDG_CACHE_HOME="$home/fresh-cache" <<<"$(stdin_five 40 "$R")" >/dev/null; [[ -f $home/fresh-cache/plimsoll/limits.json ]] && echo yes || echo no)"
+check_eq "XDG_CACHE_HOME unset: the file goes to ~/.cache" "yes" \
+  "$(env -i PATH="$PATH" HOME="$home" COLUMNS=0 /bin/bash "$script" <<<"$(stdin_five 40 "$R")" >/dev/null 2>&1; [[ -f $home/.cache/plimsoll/limits.json ]] && echo yes || echo no)"
+rm -rf "$home/.cache"
+
+# Codex goes through the same merge. The log has 8% of the five-hour window
+# and 24% of the week used, both resetting at $far.
+stored_codex() {  # primary %, its resets_at, its changed_at
+  printf '{"version":1,"codex":{"primary":{"used_percent":%s,"resets_at":%s,"changed_at":%s},"secondary":{"used_percent":24,"resets_at":%s,"changed_at":%s}}}' "$1" "$2" "$3" "$far" "$clock"
+}
+codex_in_file() { jq -c '[.codex.primary.used_percent, .codex.primary.resets_at]' "$limits" 2>&1; }
+new_cache; stored_codex 50 "$far" "$clock" > "$limits"
+check "codex: a higher shared reading in the same window is drawn" "Codex 50%" "$(render XDG_CACHE_HOME="$cache" <<<"$std")"
+new_cache; stored_codex 50 "$(( far - W ))" "$clock" > "$limits"
+check "codex: the log's newer window replaces an older one" "Codex 8%" "$(render XDG_CACHE_HOME="$cache" <<<"$std")"
+new_cache; stored_codex 3 "$(( far + W ))" "$clock" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$std" >/dev/null
+check_eq "codex: an older window does not overwrite a newer one" "[3,$(( far + W ))]" "$(codex_in_file)"
+new_cache; render XDG_CACHE_HOME="$cache" <<<"$std" >/dev/null
+check_eq "codex: the log's reading is stored" "[8,$far]" "$(codex_in_file)"
+check_eq "codex secondary is stored too" "[24,$far]" "$(jq -c '[.codex.secondary.used_percent, .codex.secondary.resets_at]' "$limits" 2>&1)"
+log_old() { touch -t "$(date -v-2H +%Y%m%d%H%M)" "$home/.codex/sessions/rollout-test.jsonl"; }   # over an hour, under a week
+new_cache; stored_codex 8 "$far" "$(( clock - 7200 ))" > "$limits"; log_old
+check "codex: dimmed when both the stored value and the log are over an hour old" "Codex"$'\e[2m 8%' "$(render_raw XDG_CACHE_HOME="$cache" <<<"$std")"
+# A steady value keeps its old changed_at, but the log is rewritten after every
+# real turn: that is a confirmation, and the reading is current.
+touch "$home/.codex/sessions/rollout-test.jsonl"
+new_cache; stored_codex 8 "$far" "$(( clock - 7200 ))" > "$limits"
+check_absent "codex: not dimmed when the same value is in a fresh log" "Codex"$'\e[2m' "$(render_raw XDG_CACHE_HOME="$cache" <<<"$std")"
+new_cache; stored_codex 8 "$far" "$(( clock - 10 ))" > "$limits"
+log_old
+check_absent "codex: not dimmed while the stored reading is fresh, whatever the log's age" "Codex"$'\e[2m' "$(render_raw XDG_CACHE_HOME="$cache" <<<"$std")"
+new_cache
+check "codex: a log read for the first time keeps its own age: dimmed" "Codex"$'\e[2m 8%' "$(render_raw XDG_CACHE_HOME="$cache" <<<"$std")"
+touch "$home/.codex/sessions/rollout-test.jsonl"
 
 # install.sh in throwaway homes: it must leave a user's settings as it found
 # them unless it has something to add, and never half-install.

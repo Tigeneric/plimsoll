@@ -14,6 +14,67 @@ shopt -s extglob
 
 input=$(cat)
 
+now=$(date +%s)
+
+# Codex writes rate_limits into its session log after every turn, so the newest
+# log holds its latest reading; logs older than a week are not looked at. The
+# reading is only an input to the merge below. Sets cx_pu/cx_pr (five-hour used
+# %, reset), cx_su/cx_sr (weekly) and cx_seen (when the log was written); all
+# stay empty without a reading.
+cx_pu="" cx_pr="" cx_su="" cx_sr="" cx_seen=""
+codex_scan() {
+  local logs=() f tail_ primary="" secondary="" num='"used_percent":([0-9]+(\.[0-9]+)?)' at='"resets_at":([0-9]+)'
+  while IFS= read -r f; do logs+=("$f"); done < <(
+    find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -mtime -7 2>/dev/null)
+  (( ${#logs[@]} )) || return 1
+  # A session that has not finished a turn yet has no reading; try a few more.
+  while IFS= read -r f; do
+    tail_=$(tail -c 262144 "$f")
+    primary=$(grep -o '"primary":{[^}]*}' <<<"$tail_" | tail -1)
+    [[ -n "$primary" ]] && break
+  done < <(ls -t "${logs[@]}" | head -5)
+  [[ "$primary" =~ $num ]] || return 1
+  cx_pu=${BASH_REMATCH[1]}
+  [[ "$primary" =~ $at ]] && cx_pr=${BASH_REMATCH[1]}
+  secondary=$(grep -o '"secondary":{[^}]*}' <<<"$tail_" | tail -1)
+  [[ "$secondary" =~ $num ]] && cx_su=${BASH_REMATCH[1]}
+  [[ "$secondary" =~ $at ]] && cx_sr=${BASH_REMATCH[1]}
+  cx_seen=$(stat -f %m "$f")
+}
+codex_scan
+
+# The shared limits file, ${XDG_CACHE_HOME:-~/.cache}/plimsoll/limits.json.
+# Every session's stdin carries only the limits from its own last API response,
+# so an idle tab shows an old reading while others have newer ones. Each session
+# merges its reading (Claude's from stdin, Codex's from the log above) into the
+# file, window by window, and draws from the merge. No clock orders the
+# readings: a reading whose resets_at is later than the stored one by more than
+# TOL seconds belongs to a newer window and wins; within TOL it is the same
+# window (the reset time jitters by up to ~50 s between responses, measured in
+# Codex's logs) and the higher percentage wins, since usage within a window only
+# grows. Format (version 1), one object per window, each source keeping its own
+# field name:
+#   {"version":1,
+#    "claude":{"five_hour":{"used_percentage":N,"resets_at":EPOCH,"changed_at":EPOCH},"seven_day":{...}},
+#    "codex":{"primary":{"used_percent":N,"resets_at":EPOCH,"changed_at":EPOCH},"secondary":{...}}}
+# changed_at is when the stored value of that window last changed, not when it
+# was last confirmed: a stale tab replaying an equal value cannot be told from a
+# fresh confirmation. (A Codex reading new to the file is stamped with the log's
+# own mtime, so a day-old log is not made fresh by being read now.) The file is
+# written only when the merge differs from it, to a temporary file in the same
+# directory, then renamed over it. There is no lock: the merge is monotonic, so
+# an update lost between two concurrent writers comes back with the next render.
+# A missing, empty, corrupt or other-version file counts as empty and is
+# overwritten. A CLAUDE_CONFIG_DIR other than ~/.claude is another account with
+# its own limits, so it gets its own file, in a subdirectory named after its
+# path with / and . turned into - (~/.claude-work: plimsoll/-Users-me--claude-work/).
+limits_dir="${XDG_CACHE_HOME:-$HOME/.cache}/plimsoll"
+config_dir=${CLAUDE_CONFIG_DIR%%+(/)}
+[[ -n "$config_dir" && "$config_dir" != "$HOME/.claude" ]] && limits_dir+="/${config_dir//[\/.]/-}"
+limits_file="$limits_dir/limits.json"
+shared=""
+[[ -f "$limits_file" ]] && { shared=$(<"$limits_file"); } 2>/dev/null
+
 # Fields are joined with \x1f, not tabs: read collapses runs of a whitespace
 # IFS, so an empty field (a model with no effort level) would shift the rest.
 # Control characters in text become "?": a newline would end the read early
@@ -22,12 +83,49 @@ input=$(cat)
 # arrive in tenths, 0 to 1000, rounded up once: the bars count cells from
 # them, so 12.5% is exactly one cell and 12.6% starts the second. Timestamps
 # are whole seconds within a real range. Anything else becomes empty, and its
-# segment is left out.
-IFS=$'\x1f' read -r session_id dir dir_ok model effort fast ctx limit5h reset5h limit7d reset7d < <(
-  jq -r 'def text: tostring | gsub("[\\x00-\\x1f\\x7f]"; "?");
+# segment is left out. The limits come out merged with the shared file; the
+# last two fields are whether to write it and what.
+IFS=$'\x1f' read -r session_id dir dir_ok model effort fast ctx limit5h reset5h limit7d reset7d cx_pct cx_week cx_changed write_limits limits_json < <(
+  jq -r --argjson now "$now" --arg shared "$shared" \
+    --arg cpu "$cx_pu" --arg cpr "$cx_pr" --arg csu "$cx_su" --arg csr "$cx_sr" --arg cseen "$cx_seen" '
+    def text: tostring | gsub("[\\x00-\\x1f\\x7f]"; "?");
     def tenths: if type == "number" then . * 10 | ceil | if . < 0 then 0 elif . > 1000 then 1000 else . end | tostring else "" end;
     def stamp: if type == "number" and . >= 0 and . < 100000000000 then floor | tostring else "" end;
+    # The merge. A reading is {u: used %, r: resets_at, c: changed_at}.
+    def tol: 120;
+    def pct: if type == "number" then (if . < 0 then 0 elif . > 100 then 100 else . end) else null end;
+    def secs: if type == "number" and . >= 0 and . < 100000000000 then floor else null end;
+    def reading: if .u == null then null else . end;
+    def stored($k): if type == "object" then {u: (.[$k] | pct), r: (.resets_at | secs), c: (.changed_at | secs)} | reading else null end;
+    def merge($old; $new):
+      if $new == null then $old elif $old == null then $new
+      else ($old.r // 0) as $or | ($new.r // 0) as $nr |
+        if $nr > $or + tol then $new
+        elif $or > $nr + tol then $old
+        elif $new.u > $old.u then $new
+        else $old end
+      end
+      | if . != null and .c == null then .c = $now else . end;
+    def window($k): if . == null then null else ({($k): .u, resets_at: .r, changed_at: .c} | with_entries(select(.value != null))) end;
+    def claude($w): try (.rate_limits[$w] | {u: (.used_percentage | pct), r: (.resets_at | secs), c: $now} | reading) catch null;
+    def codex($u; $r): ($u | if . == "" then null else tonumber | pct end) as $u |
+      if $u == null then null else {u: $u, r: ($r | if . == "" then null else tonumber | secs end), c: ([$now, ($cseen | if . == "" then $now else tonumber end)] | min)} end;
+    def tenth: if . == null then "" else .u * 10 | ceil | tostring end;
+    def codex_used: if . == null then "" else (if .r != null and .r <= $now then 0 else .u | floor end | tostring) end;
     (.workspace.current_dir // .cwd // "" | tostring) as $dir |
+    (try ($shared | fromjson | if type == "object" and .version == 1 then . else null end) catch null) as $s |
+    (try $s.claude.five_hour catch null | stored("used_percentage")) as $s5 |
+    (try $s.claude.seven_day catch null | stored("used_percentage")) as $s7 |
+    (try $s.codex.primary catch null | stored("used_percent")) as $sp |
+    (try $s.codex.secondary catch null | stored("used_percent")) as $ss |
+    merge($s5; claude("five_hour")) as $m5 |
+    merge($s7; claude("seven_day")) as $m7 |
+    merge($sp; codex($cpu; $cpr)) as $mp |
+    merge($ss; codex($csu; $csr)) as $ms |
+    ({version: 1}
+      + (({five_hour: ($m5 | window("used_percentage")), seven_day: ($m7 | window("used_percentage"))} | with_entries(select(.value != null))) | if length > 0 then {claude: .} else {} end)
+      + (({primary: ($mp | window("used_percent")), secondary: ($ms | window("used_percent"))} | with_entries(select(.value != null))) | if length > 0 then {codex: .} else {} end)
+    ) as $out |
     [
     (.session_id // "" | text),
     ($dir | text),
@@ -36,12 +134,26 @@ IFS=$'\x1f' read -r session_id dir dir_ok model effort fast ctx limit5h reset5h 
     (.effort.level // "" | text),
     (.fast_mode == true | tostring),
     (.context_window.used_percentage | tenths),
-    (.rate_limits.five_hour.used_percentage | tenths),
-    (.rate_limits.five_hour.resets_at | stamp),
-    (.rate_limits.seven_day.used_percentage | tenths),
-    (.rate_limits.seven_day.resets_at | stamp)
+    ($m5 | tenth),
+    ($m5 | if . == null or .r == null then "" else .r | tostring end),
+    ($m7 | tenth),
+    ($m7 | if . == null or .r == null then "" else .r | tostring end),
+    ($mp | codex_used),
+    ($ms | codex_used),
+    ($mp | if . == null then "" else .c | tostring end),
+    (if $out != $s and ($out | length) > 1 then "1" else "" end),
+    ($out | tojson)
   ] | join("\u001f")' <<<"$input" 2>/dev/null
 )
+
+# Write the merge back if it differs from the file, atomically.
+if [[ -n "$write_limits" ]]; then
+  {
+    mkdir -p "$limits_dir" &&
+      tmp=$(mktemp "$limits_dir/limits.XXXXXX") &&
+      { printf '%s\n' "$limits_json" > "$tmp" && mv -f "$tmp" "$limits_file"; } || rm -f "$tmp"
+  } 2>/dev/null
+fi
 
 reset=$'\e[0m'; dim=$'\e[2m'
 green=$'\e[32m'; yellow=$'\e[33m'; red=$'\e[31m'; magenta=$'\e[35m'; blue=$'\e[34m'; cyan=$'\e[36m'
@@ -137,7 +249,6 @@ CODEX_USAGE_URL="https://chatgpt.com/settings/usage?tab=overview"
 
 # Subscription limits: present only on Pro/Max and only after the first
 # response. A reset already past means the window is empty again.
-now=$(date +%s)
 [[ "$limit5h" =~ ^[0-9]+$ && "$reset5h" =~ ^[0-9]+$ ]] && (( reset5h <= now )) && limit5h=0
 [[ "$limit7d" =~ ^[0-9]+$ && "$reset7d" =~ ^[0-9]+$ ]] && (( reset7d <= now )) && limit7d=0
 
@@ -234,38 +345,24 @@ fi
 
 # Codex's limits, for when it works alongside: its mark, filled to what is left
 # of its weekly limit like the model tile, and the share of its five-hour window
-# used. Codex writes rate_limits into its session log after every turn, so the
-# newest log holds the latest reading; logs older than a week are not looked at,
-# and without one the group is left out. Nothing refreshes the reading between
-# Codex turns: a window whose reset has passed counts as empty, and a reading
-# over an hour old is dimmed.
-codex_window_used() {   # a primary/secondary object -> % used, 0 once its reset has passed
-  [[ "$1" =~ \"used_percent\":([0-9]+) ]] || return 1
-  local used=${BASH_REMATCH[1]}
-  [[ "$1" =~ \"resets_at\":([0-9]+) ]] && (( BASH_REMATCH[1] <= now )) && used=0
-  printf '%s' "$used"
-}
+# used. Without a reading the group is left out. Nothing refreshes the reading
+# between Codex turns: a window whose reset has passed counts as empty (above),
+# and a reading neither changed nor confirmed by a Codex turn for over an hour is dimmed.
 codex_limit() {
-  local logs=() f tail_ primary="" secondary="" pct week_used week_left=""
-  while IFS= read -r f; do logs+=("$f"); done < <(
-    find "$HOME/.codex/sessions" -name 'rollout-*.jsonl' -mtime -7 2>/dev/null)
-  (( ${#logs[@]} )) || return 1
-  # A session that has not finished a turn yet has no reading; try a few more.
-  while IFS= read -r f; do
-    tail_=$(tail -c 262144 "$f")
-    primary=$(grep -o '"primary":{[^}]*}' <<<"$tail_" | tail -1)
-    [[ -n "$primary" ]] && break
-  done < <(ls -t "${logs[@]}" | head -5)
-  pct=$(codex_window_used "$primary") || return 1
-  secondary=$(grep -o '"secondary":{[^}]*}' <<<"$tail_" | tail -1)
-  week_used=$(codex_window_used "$secondary") && week_left=$(( 100 - week_used ))
-  local mark
+  [[ "$cx_pct" =~ ^[0-9]+$ ]] || return 1
+  local pct=$cx_pct week_left="" mark
+  [[ "$cx_week" =~ ^[0-9]+$ ]] && week_left=$(( 100 - cx_week ))
   if [[ -n "$icons" ]]; then
     mark=$(link "$CODEX_USAGE_URL" $'\e[38;2;122;157;255m'"$(icon_glyph 4 "$week_left") ${reset}")
   else
     mark=$(link "$CODEX_USAGE_URL" Codex)
   fi
-  if (( now - $(stat -f %m "$f") > 3600 )); then
+  # Fresh as of the later of the stored value's last change and the log's last
+  # write: Codex writes the log only after a real turn, so a steady value in a
+  # recently written log is current although its changed_at is old.
+  local fresh=$cx_changed
+  [[ "$cx_seen" =~ ^[0-9]+$ ]] && (( cx_seen > ${fresh:-0} )) && fresh=$cx_seen
+  if [[ "$fresh" =~ ^[0-9]+$ ]] && (( now - fresh > 3600 )); then
     printf '%s' "${dim}${mark}${dim} ${pct}%${reset}"
     return
   fi

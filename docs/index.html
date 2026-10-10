@@ -83,6 +83,7 @@ header code, .key code { font-family: var(--mono); font-size: .9em; }
 section h2 { font: 600 24px/1 var(--display); letter-spacing: .04em; text-transform: uppercase; margin: 0 0 12px; }
 .notes { max-width: 68ch; color: var(--muted); display: grid; gap: 8px; }
 .notes p { margin: 0; }
+.notes a { color: var(--fg); }
 
 .top { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between; }
 .top a, footer a { color: var(--fg); }
@@ -125,6 +126,12 @@ footer { border-top: 1px solid var(--rule); padding-top: 16px; color: var(--mute
     <p>The model and Codex marks are glyphs of a small font built on your machine and placed at private-use code points U+E900–U+E9A9. Each mark exists at 26 fill levels; the status line picks the one for what is left of the weekly limit, so the tile drains from the top as the week is spent.</p>
     <p>Where the terminal cannot draw that font, the line prints the names instead (<code>Opus 5.5 med</code>, <code>Codex 8%</code>), and the weekly levels are not shown.</p>
   </section>
+
+  <section class="notes">
+    <h2>Limits shared between tabs</h2>
+    <p>Claude Code tells each session its limits only with the answer to that session's own last request, so a tab left alone for an hour would show an hour-old reading. Every session therefore merges what it knows, Claude's windows and Codex's, into one file, <code>~/.cache/plimsoll/limits.json</code>, and draws from the merge: per window, a later reset means a newer window, and within one window the higher share wins, since usage only grows.</p>
+    <p>plimsoll never calls the network or a CLI to refresh it. Another program may: one that asks the official CLIs while every tab is idle keeps the file fresh, and can add Antigravity's limits, which the line keeps but does not draw. The format and the merge rule are in the <a href="https://github.com/Tigeneric/plimsoll#the-shared-limits-file">README</a>.</p>
+  </section>
   <footer>
     <span>MIT licence for the code.</span>
     <span>Not affiliated with Anthropic or OpenAI; the icons are drawn on your machine from their pictures.</span>
@@ -149,16 +156,16 @@ const SEGS = [
     body: "Lines added and removed since the last commit, across the working tree. Hidden when there is nothing uncommitted." },
   { x0: 837,  x1: 993,  tier: 0, label: "model",    title: "Model, effort, weekly limit",
     seen: "▣ 5.5 med",
-    body: "The model family as its icon, then the version and effort level (⚡ in fast mode). The tile is filled to what is left of the weekly limit. Clicking it opens the usage page." },
+    body: "The model family as its icon, then the version and effort level (⚡ in fast mode). The tile is filled to what is left of the weekly limit, as the newest reading any of your sessions has. Clicking it opens the usage page." },
   { x0: 1046, x1: 1235, tier: 1, label: "context",  title: "Context window",
     seen: "ctx ▰▰▱▱▱▱▱▱",
     body: "How full the conversation's context is, in 8 cells of 12.5% each. A cell lights as soon as any of it is used. Green, yellow from 50%, red from 80%." },
   { x0: 1286, x1: 1506, tier: 0, label: "5-hour",   title: "Five-hour limit",
     seen: "2h30m ▰▰▰▱▱▱▱▱",
-    body: "Time until the window resets, then how much of it is used. The countdown rounds down: whole hours above 3h, then 30, 15, 5 and 1 minute steps. Yellow from 70%, red from 90%; once only the last cell remains, the share left follows it as a number." },
+    body: "Time until the window resets, then how much of it is used. The countdown rounds down: whole hours above 3h, then 30, 15, 5 and 1 minute steps. Yellow from 70%, red from 90%; once only the last cell remains, the share left follows it as a number. An idle tab shows the newest reading another tab has, not its own old one." },
   { x0: 1557, x1: 1635, tier: 1, label: "Codex",    title: "Codex limits",
     seen: "☁ 8%",
-    body: "Shown when Codex works alongside. The mark is filled to Codex's weekly limit left; the number is its five-hour window used. Read from Codex's own session logs, dimmed when the reading is over an hour old." },
+    body: "Shown when Codex works alongside. The mark is filled to Codex's weekly limit left; the number is its five-hour window used. Read from Codex's own session logs and shared with your other tabs; dimmed when the reading is over an hour old." },
   { x0: 1684, x1: 1761, tier: 0, label: "disk",     title: "Free disk space",
     seen: "38G",
     body: "Free space on the startup volume. Yellow under 25 GB, red under 10 GB." },
