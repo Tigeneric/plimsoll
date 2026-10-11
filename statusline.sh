@@ -56,7 +56,11 @@ codex_scan
 # field name:
 #   {"version":1,
 #    "claude":{"five_hour":{"used_percentage":N,"resets_at":EPOCH,"changed_at":EPOCH},"seven_day":{...}},
-#    "codex":{"primary":{"used_percent":N,"resets_at":EPOCH,"changed_at":EPOCH},"secondary":{...}}}
+#    "codex":{"primary":{"used_percent":N,"resets_at":EPOCH,"changed_at":EPOCH},"secondary":{...}},
+#    "antigravity":{"<quota group>":{"5h":{"used_percent":N,...},"weekly":{...}},...}}
+# The antigravity section is written by another program that polls Antigravity's
+# CLI; plimsoll only keeps it. The cases in tests/contract/ are the rule's
+# contract with such writers.
 # changed_at is when the stored value of that window last changed, not when it
 # was last confirmed: a stale tab replaying an equal value cannot be told from a
 # fresh confirmation. (A Codex reading new to the file is stamped with the log's
@@ -122,9 +126,19 @@ IFS=$'\x1f' read -r session_id dir dir_ok model effort fast ctx limit5h reset5h 
     merge($s7; claude("seven_day")) as $m7 |
     merge($sp; codex($cpu; $cpr)) as $mp |
     merge($ss; codex($csu; $csr)) as $ms |
+    # Antigravity has no reading here; another writer fills its section and
+    # plimsoll keeps it, each window cleaned like the ones above.
+    (try ($s.antigravity | if type == "object" then
+        with_entries(.value |= (if type == "object" then
+          ({"5h": (try .["5h"] catch null | stored("used_percent") | window("used_percent")),
+            weekly: (try .weekly catch null | stored("used_percent") | window("used_percent"))}
+           | with_entries(select(.value != null)))
+        else {} end) | select(.value | length > 0))
+      else {} end) catch {}) as $agy |
     ({version: 1}
       + (({five_hour: ($m5 | window("used_percentage")), seven_day: ($m7 | window("used_percentage"))} | with_entries(select(.value != null))) | if length > 0 then {claude: .} else {} end)
       + (({primary: ($mp | window("used_percent")), secondary: ($ms | window("used_percent"))} | with_entries(select(.value != null))) | if length > 0 then {codex: .} else {} end)
+      + (if ($agy | length) > 0 then {antigravity: $agy} else {} end)
     ) as $out |
     [
     (.session_id // "" | text),

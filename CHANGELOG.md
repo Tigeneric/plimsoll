@@ -3,7 +3,7 @@
 Versions follow [semantic versioning](https://semver.org). The version lives in
 one place, the git tag; a release is a section here plus `git tag vX.Y.Z`.
 
-## Unreleased
+## 0.2.0 — 2026-10-11
 
 ### Added
 
@@ -14,6 +14,12 @@ one place, the git tag; a release is a section here plus `git tag vX.Y.Z`.
   within the same window the higher percentage does. A `CLAUDE_CONFIG_DIR` other
   than `~/.claude` is another account and keeps a file of its own, in a
   subdirectory named after its path. The format is described in the README.
+- An `antigravity` section in the shared file, per quota group, with a `5h` and
+  a `weekly` window. plimsoll has no reading of its own for it: a poller of
+  Antigravity's CLI writes it, and plimsoll keeps it through its own writes
+  without drawing it.
+- `tests/contract/`: the merge rule as cases, and a file every writer must
+  carry through, for other writers of the file to run as well.
 
 ### Changed
 

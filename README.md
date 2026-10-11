@@ -76,11 +76,16 @@ two accounts would be drawn in both.
  "claude":{"five_hour":{"used_percentage":42,"resets_at":1791657702,"changed_at":1791650000},
            "seven_day":{"used_percentage":18,"resets_at":1792049602,"changed_at":1791640000}},
  "codex":{"primary":{"used_percent":8.0,"resets_at":1791908796,"changed_at":1791908000},
-          "secondary":{"used_percent":24.0,"resets_at":1791908796,"changed_at":1791640000}}}
+          "secondary":{"used_percent":24.0,"resets_at":1791908796,"changed_at":1791640000}},
+ "antigravity":{"Gemini Models":{"5h":{"used_percent":12.5,"resets_at":1791660000,"changed_at":1791650000},
+                                 "weekly":{"used_percent":38,"resets_at":1792050000,"changed_at":1791650000}}}}
 ```
 
-Each source keeps its own field names; percentages are 0 to 100, times are epoch seconds. A
-window is left out when nobody has reported it. The merge is per window and needs no clock: a
+Claude and Codex keep their own field names. Antigravity's section is keyed by the quota groups
+and windows its CLI names (`agy -p "/usage"`), and its percentage is `used_percent`, the share
+used: the CLI reports `remaining_fraction`, which a writer turns into 0 to 100 so the merge reads
+the same everywhere. Percentages are 0 to 100, times are epoch seconds. A window is left out when
+nobody has reported it. The merge is per window and needs no clock: a
 reading whose `resets_at` is more than 120 seconds later than the stored one belongs to a newer
 window and replaces it; otherwise it is the same window and the higher percentage wins, since
 usage within a window only grows. (Codex's logs show the reset time jittering by up to about 50
@@ -103,8 +108,16 @@ Other programs may also write it, as long as they follow the same merge rule, wr
 version and field names, and replace the file by rename. plimsoll itself never calls a CLI or
 the network to refresh it: it only merges what Claude Code and Codex already report. A
 background tool that polls the official CLIs while the terminal is idle (`claude -p /usage`,
-`codex app-server`) can keep the file fresh, and every tab then draws its numbers. Antigravity
-and other services do not belong in this file; its format covers Claude and Codex only.
+`codex app-server`) can keep the file fresh, and every tab then draws its numbers. Such a tool is
+also the only source of the `antigravity` section: plimsoll has no local reading of Antigravity,
+keeps the section through its own writes and does not draw it. Other services do not belong in
+the file.
+
+The merge rule is written down as cases in [tests/contract/](tests/contract/): `merge-cases.json`,
+one window per case with what was stored, what was read and what must result, and
+`limits-file.json`, a file every writer must carry through unchanged. plimsoll's tests run both;
+a second writer keeps byte-identical copies and runs them too, so a change to the rule turns
+both suites red rather than neither.
 
 Which source to read limits from — local reports, the tools' CLIs, their internal API or the
 website — and why plimsoll reads only the local ones: [docs/LIMIT_SOURCES.md](docs/LIMIT_SOURCES.md).

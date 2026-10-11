@@ -206,6 +206,49 @@ check_eq "the file holds version 1 and exactly these windows" \
   "1 claude.five_hour claude.seven_day codex.primary codex.secondary" \
   "$(jq -r '"\(.version) " + ([paths(type == "object" and has("changed_at")) | join(".")] | join(" "))' "$limits" 2>&1)"
 
+# The merge rule as a contract shared with other writers of the file
+# (tests/contract/merge-cases.json), every case run through Claude's five-hour
+# window. The guard comes first, so an empty case list cannot pass as coverage.
+contract="$repo/tests/contract"
+check_eq "the merge contract has its 13 cases" "13" "$(jq '.cases | length' "$contract/merge-cases.json" 2>&1)"
+check_eq "the merge contract's tolerance is the script's" \
+  "$(jq '.tolerance_seconds' "$contract/merge-cases.json" 2>&1)" "$(sed -n 's/.*def tol: \([0-9]*\);.*/\1/p' "$script")"
+no_limits='{"session_id":"t","model":{"display_name":"Opus 5.5"}}'
+while IFS= read -r c; do
+  name=$(jq -r .name <<<"$c")
+  new_cache; rm -f "$limits"
+  jq -e '.stored != null' <<<"$c" >/dev/null &&
+    jq -c '{version: 1, claude: {five_hour: {used_percentage: .stored.used, resets_at: .stored.resets_at, changed_at: 1790000000}}}' <<<"$c" > "$limits"
+  if jq -e '.reading != null' <<<"$c" >/dev/null; then
+    stdin=$(stdin_five "$(jq .reading.used <<<"$c")" "$(jq .reading.resets_at <<<"$c")")
+  else
+    stdin=$no_limits
+  fi
+  render XDG_CACHE_HOME="$cache" <<<"$stdin" >/dev/null
+  check_eq "contract: $name" "$(jq -c '[.result.used, .result.resets_at]' <<<"$c")" "$(five_in_file)"
+  changed=$(jq '.claude.five_hour.changed_at' "$limits" 2>&1)
+  if [[ $(jq -r .winner <<<"$c") == stored ]]; then
+    check_eq "contract: $name: changed_at kept" "1790000000" "$changed"
+  else
+    check_eq "contract: $name: changed_at is now" "now" "$( (( changed >= clock )) 2>/dev/null && echo now || echo "$changed")"
+  fi
+done < <(jq -c '.cases[]' "$contract/merge-cases.json")
+
+# The antigravity section has no source in plimsoll: another writer (a poller
+# that asks Antigravity's CLI) fills it, and plimsoll keeps it through its own
+# writes, each window checked like the others. A reading of the same Claude
+# window that is higher forces the write.
+new_cache; cp "$contract/limits-file.json" "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 70 1800000000)" >/dev/null
+check_eq "a write keeps the antigravity section as it was" \
+  "$(jq -cS .antigravity "$contract/limits-file.json")" "$(jq -cS .antigravity "$limits" 2>&1)"
+new_cache
+printf '{"version":1,"antigravity":{"G":{"5h":{"used_percent":"x","resets_at":%s},"weekly":{"used_percent":140,"resets_at":%s,"changed_at":%s}},"H":5,"I":{"5h":null}}}' \
+  "$R" "$R" "$clock" > "$limits"
+render XDG_CACHE_HOME="$cache" <<<"$(stdin_five 40 "$R")" >/dev/null
+check_eq "an unusable antigravity window or group is dropped, a percentage held to 100" \
+  "{\"G\":{\"weekly\":{\"changed_at\":$clock,\"resets_at\":$R,\"used_percent\":100}}}" "$(jq -cS .antigravity "$limits" 2>&1)"
+
 # A file that cannot be used never breaks the line, and is repaired.
 break_file() {  # kind
   case $1 in
